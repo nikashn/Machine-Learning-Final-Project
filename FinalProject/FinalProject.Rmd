@@ -1,0 +1,293 @@
+---
+title: "Final Project"
+author: "Nikash Narula (Perm# 3877636) and Jagdeep Chahal (Perm# 7246374)"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+Loading in Census/Education Data
+```{r}
+library(dplyr)
+library(readr)
+# read in census data
+state.name <- c(state.name, "District of Columbia")
+state.abb <- c(state.abb, "DC")
+## read in census data
+census = read_csv("./acs2017_county_data.csv") %>% select(-c(CountyId, -ChildPoverty, -Income, -IncomeErr, -IncomePerCap, -IncomePerCapErr)) %>%
+  mutate(State = state.abb[match(`State`, state.name)]) %>%
+  filter(State != "PR")
+
+# read in education data
+education <- read_csv("./Education.csv") %>%
+  filter(!is.na(`2003 Rural-urban Continuum Code`)) %>%
+  filter(State != "PR") %>%
+  select(-`FIPS Code`,
+         -`2003 Rural-urban Continuum Code`,
+         -`2003 Urban Influence Code`,
+         -`2013 Rural-urban Continuum Code`,
+         -`2013 Urban Influence Code`) %>%
+  rename(County = `Area name`)
+
+census = as.data.frame(census)
+education = as.data.frame(education)
+```
+
+Preliminary Data Analysis
+
+1. The dimension of census is 3142 x 31. There are 0 missing values. There are 51 distinct values in State in census which indicates all 50 states and federal district are contained in the data.
+2. The dimension of education is 3143 x 42. 18 distinct counties contain missing values. There are 1877 distinct values in County in education. There are also 1877 distinct values in County in census. One can assume each dataset has the same counties.
+```{r}
+dim(census)
+sum(is.na(census))
+length(unique(census$State))
+dim(education)
+length(which(apply(education, 1, function(X) any(is.na(X)))))
+length(unique(education$County))
+length(unique(census$County))
+```
+
+Data Wrangling
+
+3. Removed NA values from education.
+4. Mutate to include 6 features + TotalPop.
+5. State-level summary into a dataset named education.state.
+6. state.level created with variable of highest degree of education in that state, LargestEduLevel.
+```{r}
+education = na.omit(education)
+education = education %>% select(c("State","County","Less than a high school diploma, 2015-19", 
+                       "High school diploma only, 2015-19","Some college or associate's degree, 2015-19",
+                       "Bachelor's degree or higher, 2015-19"))
+education = education %>% mutate(TotalPop = rowSums(education[3:6]))
+education.state = education %>% group_by(State) %>% summarise(`Less than a high school diploma, 2015-19` = sum(`Less than a high school diploma, 2015-19`), `High school diploma only, 2015-19` = sum(`High school diploma only, 2015-19`), `Some college or associate's degree, 2015-19` = sum(`Some college or associate's degree, 2015-19`), `Bachelor's degree or higher, 2015-19` = sum(`Bachelor's degree or higher, 2015-19`))
+edu_levels = c("Less than a high school diploma, 2015-19", "High school diploma only, 2015-19", "Some college or associate's degree, 2015-19", "Bachelor's degree or higher, 2015-19")
+state.level = education.state %>% mutate(LargestEduLevel = edu_levels[max.col(education.state[2:5])])
+```
+
+Visualization
+
+7. Color map by education level with highest population. Show legend.
+8. Visualiztion for census data 
+9. Clean and aggregate census data.
+  From the correlation matrix of census.clean, it's clear that Women is colinear with Total Pop, and White is colinear with Minority. Thus, one column of each pair should be deleted. Columns Women and White are deleted.
+10. Print first 5 rows of census.clean
+```{r}
+install.packages("maps")
+library(maps)
+library(ggplot2)
+states <- map_data("state")
+ggplot(data = states) + 
+  geom_polygon(aes(x = long, y = lat, fill = region, group = group),
+               color = "white") + 
+  coord_fixed(1.3) +
+  guides(fill=FALSE)  # color legend is unnecessary for this example and takes too long
+
+library(stringr)
+states.rename = states %>% mutate(State = state.abb[match(str_to_title(region), state.name)])
+states.join = left_join(x=states.rename, y=state.level, by="State", all.x=TRUE)
+ggplot(data = states.join) + 
+  geom_polygon(aes(x = long, y = lat, fill = `LargestEduLevel`, group = group),
+               color = "white") + 
+  coord_fixed(1.3) + scale_color_manual(name='Largest Education Level Per State',
+                     breaks=edu_levels,
+                     values=c('Less than a high school diploma, 2015-19'='grey', 'High school diploma only, 2015-19'='green', 'Some college or associates degree, 2015-19'='blue', 'Bachelors degree or higher, 2015-19'='red'))
+
+ggplot(data = states.join) + 
+    geom_bar(aes(x = long, fill = `LargestEduLevel`, group = group),
+                 color = "white") + 
+    coord_fixed(1.3) + guides(fill=FALSE)
+
+census.clean = census[complete.cases(census), ]
+census.clean = census.clean %>% mutate(Men = Men/TotalPop, Employed = Employed/TotalPop, VotingAgeCitizen = VotingAgeCitizen/TotalPop, Minority = Hispanic+Black+Native+Asian+Pacific) %>% select(-c(Hispanic,Black,Native,Asian,Pacific,Walk,PublicWork,Construction,Unemployment))
+cor_census = cor(census.clean[3:23])
+census.clean = census.clean %>% select(-c(Women, White))
+head(census.clean, 5)
+```
+
+Dimensionality Reduction
+
+11. Run PCA for the cleaned county level census data (with State and County excluded).
+  We chose to center (by default) and scale the features before running PCA because many of the variables has vastly different means and variances. If we failed to scale these vairables prior to PCA, then most of the principal components would be driven largely by the variables with the largest mean and variance, like TotalPop. The three features with largest asbolute values for first principal component are WorkAtHome, SelfEmployed and Drive, respectively. The features with positive signs for the first principal component are TotalPop, Men, VotingAgeCitizen, Professional, Transit, OtherTransp, WorkAtHome, Employed, SelfEmployed and FamilyWork. The features with negative signs are Poverty, Service, Office, Production, Drive, Carpool, MeanCommute, PrivateWork and Minority. This means that these features with opposing signs are negatively correlated.
+12. Determine the number of minimum number of PCs needed to capture 90% of the variance for the analysis. 
+  We need 12 PCs to explain 90% of total variation in the data as the cumulative proportion of variance explained at 12 Pcs is 0.9075578.
+```{r}
+census.pr = census.clean %>% select(-c(State, County))
+pr.out = prcomp(census.pr, scale=TRUE, center=TRUE )
+PC1 = pr.out$rotation[,1]
+PC2 = pr.out$rotation[,2]
+pc.county = data.frame(PC1,PC2)
+sort(abs(PC1))
+pr.var = pr.out$sdev^2
+pve = pr.var/sum(pr.var)
+plot(pve, xlab="Principal Component", ylab="Proportion of Variance Explained ", ylim=c(0,1), type='b')
+plot(cumsum(pve), xlab="Principal Component", ylab="Cumulative Proportion of Variance Explained", 
+     ylim=c(0,1), type='b')
+cumsum(pve)
+```
+
+Clustering
+
+13. Perform hierarchical clustering with complete linkage on census.clean (with State and County excluded).
+```{r}
+# cleaned census \data
+census.hc = census.pr
+census.dist = dist(census.hc)
+set.seed(1)
+census.hclust = hclust(census.dist)
+plot(census.hclust)
+census.clus = cutree(census.hclust, k=10)
+census.hc.ct <- mutate(census.hc, cluster = census.clus)
+
+# PC1,PC2 data
+census.pc = data.frame(PC1,PC2)
+pc.dist = dist(census.pc)
+set.seed(1)
+pc.hclust = hclust(pc.dist)
+plot(pc.hclust)
+pc.clus = cutree(pc.hclust, k=10)
+pc.hc.ct <- mutate(census.pc, cluster = pc.clus)
+
+#install.packages("dendextend")
+library(dendextend)
+# dendrogram: branches colored by 10 groups
+dend_census = as.dendrogram(census.hclust)
+# color branches and labels by 10 clusters
+dend_census = color_branches(dend_census, k=10)
+dend_census = color_labels(dend_census, k=10)
+# change label size
+dend_census = set(dend_census, "labels_cex", 0.3)
+# plot the dendrogram
+plot(dend_census, horiz=T, main = "Dendrogram colored by 10 clusters")
+
+# dendrogram: branches colored by 10 groups
+dend_pc = as.dendrogram(pc.hclust)
+# color branches and labels by 10 clusters
+dend_pc = color_branches(dend_pc, k=10)
+dend_pc = color_labels(dend_pc, k=10)
+# change label size
+dend_pc = set(dend_pc, "labels_cex", 0.3)
+# plot the dendrogram
+plot(dend_pc, horiz=T, main = "Dendrogram colored by 10 clusters")
+```
+
+Modeling
+
+14. Transform poverty into a binary categorical variable with two levels: 1 if Poverty is greater than 20, and 0 if Poverty is smaller than or equal to 20. Remove features that you think are uninformative in classfication tasks. In this case, we have removed VotingAgeCitizen, Drive, Carpool, Transit, OtherTransp as they don't seem to have any effect on the classification of Poverty form looking at the data.
+```{r}
+# we join the two datasets
+all <- census.clean %>%
+  left_join(education, by = c("State"="State", "County"="County")) %>% na.omit
+all = all %>% mutate(Poverty=factor(ifelse(Poverty >= 20,1,0))) %>% select(-c(VotingAgeCitizen, Drive, Carpool, Transit, OtherTransp)) %>% rename("LessThanHighSchoolDiploma" = `Less than a high school diploma, 2015-19`, "HighSchoolDiplomaOnly" = `High school diploma only, 2015-19`, "SomeCollegeOrAssociateDegree" = `Some college or associate's degree, 2015-19`, "BachelorDegreeOrHigher" = `Bachelor's degree or higher, 2015-19`)
+
+set.seed(123) 
+n <- nrow(all)
+idx.tr <- sample.int(n, 0.8*n) 
+all.tr <- all[idx.tr, ]
+all.te <- all[-idx.tr, ]
+
+set.seed(123) 
+nfold <- 10
+folds <- sample(cut(1:nrow(all.tr), breaks=nfold, labels=FALSE))
+
+calc_error_rate = function(predicted.value, true.value){
+  return(mean(true.value!=predicted.value))
+}
+records = matrix(NA, nrow=3, ncol=2)
+colnames(records) = c("train.error","test.error")
+rownames(records) = c("tree","logistic","lasso")
+```
+
+Classification
+
+15. Train a decision tree by cv.tree().
+  Looking at the decision trees, both pre-pruned and pruned trees split on Employed first, followed by Minority. Intuitively, this makes sense as much of the poverty in America is unfortunately associated with minorities (Black, Asian, Native, Latino, etc.). Historically, these groups have faced much more hardship and typically had far less opportunities to make their way up the social ladder. Finally, the training error obtained was 0.1561874 and test error rate obtained was 0.152.
+16. Run Logistic Regression to predict poverty in each county.
+  The statistically significant variables at the 0.05 level are TotalPop, Men, Professional, Service, Production, WorkAtHome, Employed, PrivateWork, Minority, and the 4 variables representing education level. This is consistent with what we saw in the tree decision analyis, where Employed, Minority, Service and Men were the most significant. The variable Employed has a coefficient -30.07. For a one unit increase in EMployed, the log odds of being in poverty decreases by 30.07, holding other variables fixed.
+17. Logistic Regression with Lasso.
+18. ROC curves.
+```{r}
+library(tidyverse)
+library(ISLR)
+library(glmnet)
+library(tree)
+library(maptree)
+library(randomForest)
+library(gbm)
+library(ROCR)
+tree.poverty = tree(Poverty ~ ., data = all.tr)
+summary(tree.poverty)
+draw.tree(tree.poverty, nodeinfo=TRUE, cex = 0.4)
+title("Classification Tree Built on Training Set Before Pruning")
+
+# prune the data
+set.seed(3)
+cv = cv.tree(tree.poverty, FUN=prune.misclass, K=10, rand=folds) # Print out cv
+cv$size
+cv$dev
+best.cv = min(cv$size[cv$dev == min(cv$dev)])
+best.cv # 7 is best cv
+pt.cv = prune.misclass(tree.poverty, best=best.cv)
+# Plot pruned tree
+plot(pt.cv)
+text(pt.cv, pretty=0, col = "blue", cex = .5)
+title("Pruned tree of size 7")
+tree.poverty.pred.tr = predict(pt.cv, all.tr, type="class")
+tree.poverty.pred.te = predict(pt.cv, all.te, type="class")
+records[1,1] = calc_error_rate(tree.poverty.pred.tr, all.tr$Poverty)
+records[1,2] = calc_error_rate(tree.poverty.pred.te, all.te$Poverty)
+
+all.train = all.tr[,3:21]
+all.test = all.te[,3:21]
+glm.fit.tr = glm(Poverty~., data = all.train, family=binomial)
+glm.fit.te = glm(Poverty~., data = all.test, family=binomial)
+summary(glm.fit.tr)
+summary(glm.fit.te)
+
+prob.training = predict(glm.fit.tr, type="response")
+prob.test = predict(glm.fit.te, type="response")
+records[2,1] = calc_error_rate(prob.training, all.tr$Poverty)
+records[2,2] = calc_error_rate(prob.test, all.te$Poverty)
+
+# NOTE: The Lasso code is not working - but the commented code is generally the approach one would take.
+#lambda.list.lasso = seq(1, 20) * 1e-5
+#lasso_mod_train = glmnet(all.train, all.train$Poverty, alpha = 1, lambda = lambda.list.lasso) # fit lasso model on training data
+# find optimal value
+#set.seed(1)
+#cv.out.lasso = cv.glmnet(all.train, all.train$Poverty, alpha = 1, lambda=lambda.list.lasso,
+#                         nfolds=10)
+#plot(cv.out.lasso)
+#abline(v = log(cv.out.lasso$lambda.min), col="red", lwd=3, lty=2)
+#bestlam_lasso = cv.out.lasso$lambda.min
+#bestlam_lasso
+
+#out = glmnet(x,y,alpha=1)
+#predict(out,type="coefficients",s=bestlam_lasso)[1:11,] # display coefficient estimates using #optimal value
+#lasso.pred=predict(lasso_mod_train,s=bestlam_lasso,newx=all.train)
+#records[3,1] = mean((lasso.pred-all.train$Poverty)^2)
+#lasso.pred=predict(lasso_mod_train,s=bestlam_lasso,newx=all.test)
+#records[3,2] = mean((lasso.pred-all.test$Poverty)^2)
+```
+
+Taking it Further
+
+19. Additional Classification Methods: Random Forest
+  Looking at the Random Forest method, it's clear that our conclusions are also consistent with that of logistic regression and the tree method conucted earlier. The graph of variable importance shows that Employed and Minority are the 2 most important variables in determining poverty level.
+20. Considering Another Regression Problem
+  Another regression we considered was linear regression. Doing so, we did not convert Poverty to a classification variable (1 and 0) before. We found very similar results in the data, specifically that Employed and minority were the 2 most significant factors. I prefer the classification method, however, because this is more intuitive and easily explainable to someone who would not otherwise understand the data.
+21. Overall Insights
+  There are many different things I learned from this project and one of the most important ideas is that most of my inferences prior to this project can now be seen as results and conclusions made by the data. A prime example is how I came to understand how all the possible different factors there are when taking into account Poverty.
+  In my Random forest model, the exact level of importance can be seen and we can conclude that Employed and Minority are considerably more important than the other listed factors. The predictions are mainly influenced by Employed and Minority. We can see positive correlation how value of men increases as minority and employed are still increased. But a key thing to note from this deduction is that the training and test errors for Lasso Regression, Logistic Regression, and Decision Trees were all around 15%. Because variables and features were similar in their data set resulted in them nit having that much of an impact. We took voting, carpool, transit, drive and other transport out of the equation and the training and test errors were still around 15%. For the future, I would like to take other variables into account knowing now that so many factors come into play for Poverty, in this case specifically.
+```{r}
+rf.poverty = randomForest(Poverty~., data=all.tr, importance=TRUE)
+rf.poverty
+plot(rf.poverty)
+yhat.rf = predict(rf.poverty, newdata = all.tr)
+train.rf.err = mean(yhat.rf != all.tr$Poverty)
+train.rf.err
+yhat.rf = predict(rf.poverty, newdata = all.te)
+test.rf.err = mean(yhat.rf != all.te$Poverty)
+test.rf.err
+importance(rf.poverty)
+varImpPlot(rf.poverty, sort=T, main="Variable Importance for rf.poverty", n.var=5)
+```
+
+
